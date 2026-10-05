@@ -1,0 +1,46 @@
+name: check-vacancy
+
+# 1回の実行で約5時間40分、1分ごとに確認し続ける。
+# 30分ごとの cron で次の実行が1つ待機するので、前の実行が終わるとすぐ次が始まり途切れない。
+on:
+  schedule:
+    - cron: "*/30 * * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: check-vacancy
+  cancel-in-progress: false
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 355
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Check vacancy
+        env:
+          NTFY_TOPIC: ${{ secrets.NTFY_TOPIC }}
+          DATE_FROM: "20261015"
+          DATE_TO: "20261031"
+          PLACES: "270,280"
+          LOOP_MINUTES: "340"
+          INTERVAL_SECONDS: "60"
+        run: python -u check.py
+      - name: Save state
+        if: always()
+        run: |
+          [ -f state.json ] || exit 0
+          git add state.json
+          if ! git diff --cached --quiet; then
+            git config user.name "github-actions[bot]"
+            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+            git commit -m "update state"
+            git pull --rebase
+            git push
+          fi
