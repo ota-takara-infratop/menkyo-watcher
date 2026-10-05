@@ -23,35 +23,38 @@
     fire(el, "blur");
   };
 
+  // サイトの CSP が <style> や style="" を禁止しているため、スタイルは JS から el.style で設定する
+  const el = (tag, css, props = {}, children = []) => {
+    const e = Object.assign(document.createElement(tag), props);
+    e.style.cssText = css;
+    e.append(...children);
+    return e;
+  };
+  const INPUT = "display:block;width:100%;box-sizing:border-box;font-size:16px;padding:6px;margin:2px 0 0;border:1px solid #999;background:#fff;color:#000";
+  const LABEL = "display:block;margin-top:10px;font-size:14px";
+  const input = (name, placeholder, inputmode = "text") =>
+    el("input", INPUT, { name, placeholder, inputMode: inputmode, required: true });
+
   function openSettings(me) {
-    // サイトのCSSの影響を受けないよう Shadow DOM の中に作る
-    const box = document.createElement("div");
-    const root = box.attachShadow({ mode: "open" });
-    root.innerHTML = `
-      <style>
-        .bg { position:fixed; inset:0; z-index:99999; background:rgba(0,0,0,.5);
-              display:flex; align-items:center; justify-content:center; font:16px/1.6 sans-serif; color:#000; }
-        form { background:#fff; padding:20px; border-radius:12px; width:min(90vw,360px); box-sizing:border-box; }
-        label { display:block; margin-top:10px; font-size:14px; }
-        input, select { width:100%; box-sizing:border-box; font-size:16px; padding:6px; margin-top:2px; }
-        .row { display:flex; gap:6px; }
-        button { width:100%; margin-top:16px; padding:10px; font-size:16px; }
-      </style>
-      <div class="bg"><form>
-        <b>自動入力の設定</b>
-        <label>氏名（カナ又はアルファベット）<input name="name" placeholder="メンキョハナコ" required></label>
-        <label>生年月日（年 / 月 / 日）</label>
-        <div class="row">
-          <input name="birthYear" inputmode="numeric" placeholder="1986" required>
-          <input name="birthMonth" inputmode="numeric" placeholder="8" required>
-          <input name="birthDay" inputmode="numeric" placeholder="1" required>
-        </div>
-        <label>電話番号（ハイフンなし）<input name="tel" inputmode="tel" placeholder="09011112222" required></label>
-        <label>受験場所<select name="place"><option value="280">鮫洲</option><option value="270">府中</option></select></label>
-        <button type="submit">保存して進む</button>
-      </form></div>`;
-    const form = root.querySelector("form");
-    for (const [k, v] of Object.entries(me || {})) if (form[k]) form[k].value = v;
+    const place = el("select", INPUT, { name: "place" }, [
+      el("option", "", { value: "280", textContent: "鮫洲" }),
+      el("option", "", { value: "270", textContent: "府中" }),
+    ]);
+    const form = el("form", "background:#fff;color:#000;padding:20px;border-radius:12px;width:90vw;max-width:360px;box-sizing:border-box;font:16px/1.6 sans-serif", {}, [
+      el("b", "", { textContent: "自動入力の設定" }),
+      el("label", LABEL, { textContent: "氏名（カナ又はアルファベット）" }, [input("name", "メンキョハナコ")]),
+      el("label", LABEL, { textContent: "生年月日（年 / 月 / 日）" }),
+      el("div", "display:flex;gap:6px", {}, [
+        input("birthYear", "1986", "numeric"),
+        input("birthMonth", "8", "numeric"),
+        input("birthDay", "1", "numeric"),
+      ]),
+      el("label", LABEL, { textContent: "電話番号（ハイフンなし）" }, [input("tel", "09011112222", "tel")]),
+      el("label", LABEL, { textContent: "受験場所" }, [place]),
+      el("button", "display:block;width:100%;margin-top:16px;padding:10px;font-size:16px", { type: "submit", textContent: "保存して進む" }),
+    ]);
+    const box = el("div", "position:fixed;top:0;left:0;right:0;bottom:0;z-index:99999;background:rgba(0,0,0,.5);display:flex;align-items:center;justify-content:center", {}, [form]);
+    for (const [k, v] of Object.entries(me || {})) if (form.elements[k]) form.elements[k].value = v;
     document.body.appendChild(box);
     return new Promise((resolve) => {
       form.addEventListener("submit", async (e) => {
