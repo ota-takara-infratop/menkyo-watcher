@@ -17,7 +17,7 @@ import urllib.request
 from datetime import datetime, timedelta, timezone
 
 API = "https://provisional-tokyo-prd-police-pref-api.tokyo-madoguchi-yoyaku.com/calgetres"
-SITE = "https://provisional.tokyo-madoguchi-yoyaku.com/police-pref-tokyo/calendar/01/html/main.html?lang=ja"
+SITE = "https://provisional.tokyo-madoguchi-yoyaku.com/police-pref-tokyo/index.html?lang=ja"  # 直接カレンダーを開くとリファラ確認で弾かれるため入口ページへ
 COURSE_CODE = "19"  # 仮免許
 PLACE_NAMES = {"270": "府中", "280": "鮫洲"}
 STATE_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "state.json")
