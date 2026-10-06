@@ -1,7 +1,8 @@
 name: check-vacancy
 
 # 1回の実行で約5時間40分、1分ごとに確認し続ける。
-# 30分ごとの cron で次の実行が1つ待機するので、前の実行が終わるとすぐ次が始まり途切れない。
+# 終了時に次の実行を自分で起動するので途切れない（GitHub の cron は数時間おきにしか動かないことがあるため、cron は保険）。
+# 監視終了日（DATE_TO）を過ぎたら次の実行は起動しない。
 on:
   schedule:
     - cron: "*/30 * * * *"
@@ -9,6 +10,7 @@ on:
 
 permissions:
   contents: write
+  actions: write
 
 concurrency:
   group: check-vacancy
@@ -43,4 +45,13 @@ jobs:
             git commit -m "update state"
             git pull --rebase
             git push
+          fi
+      - name: Start next run
+        if: success() || failure()
+        env:
+          GH_TOKEN: ${{ github.token }}
+          DATE_TO: "20261031"
+        run: |
+          if [ "$(TZ=Asia/Tokyo date +%Y%m%d)" -le "$DATE_TO" ]; then
+            gh workflow run check.yml --ref main --repo "$GITHUB_REPOSITORY"
           fi
