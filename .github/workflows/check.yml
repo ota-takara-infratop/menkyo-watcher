@@ -30,7 +30,7 @@ jobs:
           NTFY_TOPIC: ${{ secrets.NTFY_TOPIC }}
           DATE_FROM: "20261015"
           DATE_TO: "20261031"
-          PLACES: "270,280"
+          PLACES: "280"  # 280=鮫洲, 270=府中
           LOOP_MINUTES: "340"
           INTERVAL_SECONDS: "60"
         run: python -u check.py

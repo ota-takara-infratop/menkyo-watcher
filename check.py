@@ -4,7 +4,7 @@
   NTFY_TOPIC  通知先の ntfy トピック名（必須。未設定なら通知せず結果を表示するだけ）
   DATE_FROM   監視開始日 YYYYMMDD（既定: 20261015）
   DATE_TO     監視終了日 YYYYMMDD（既定: 20261031）
-  PLACES      監視する試験場コード カンマ区切り（既定: 270,280 = 府中,鮫洲）
+  PLACES      監視する試験場コード カンマ区切り（既定: 280 = 鮫洲。270 = 府中）
   LOOP_MINUTES      この分数のあいだ繰り返し確認する（既定: 0 = 1回だけ）
   INTERVAL_SECONDS  繰り返し時の確認間隔 秒（既定: 60）
 """
@@ -25,7 +25,7 @@ JST = timezone(timedelta(hours=9))
 
 DATE_FROM = os.environ.get("DATE_FROM", "20261015")
 DATE_TO = os.environ.get("DATE_TO", "20261031")
-PLACES = os.environ.get("PLACES", "270,280").split(",")
+PLACES = os.environ.get("PLACES", "280").split(",")
 NTFY_TOPIC = os.environ.get("NTFY_TOPIC", "")
 LOOP_MINUTES = int(os.environ.get("LOOP_MINUTES", "0"))  # 0 なら1回だけ確認して終了
 INTERVAL_SECONDS = int(os.environ.get("INTERVAL_SECONDS", "60"))
