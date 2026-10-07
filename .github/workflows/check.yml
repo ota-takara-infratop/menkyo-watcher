@@ -33,12 +33,17 @@ jobs:
           PLACES: "280"  # 280=鮫洲, 270=府中
           LOOP_MINUTES: "340"
           INTERVAL_SECONDS: "60"
+          AUTO_BOOK: "1"
+          BOOK_NAME: ${{ secrets.BOOK_NAME }}
+          BOOK_BIRTHDAY: ${{ secrets.BOOK_BIRTHDAY }}
+          BOOK_PHONE: ${{ secrets.BOOK_PHONE }}
         run: python -u check.py
       - name: Save state
         if: always()
         run: |
           [ -f state.json ] || exit 0
           git add state.json
+          for f in booked.json autobook_stopped.json; do if [ -f "$f" ]; then git add "$f"; fi; done
           if ! git diff --cached --quiet; then
             git config user.name "github-actions[bot]"
             git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
@@ -52,6 +57,8 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           DATE_TO: "20261031"
         run: |
-          if [ "$(TZ=Asia/Tokyo date +%Y%m%d)" -le "$DATE_TO" ]; then
+          if [ -f booked.json ]; then
+            echo "予約済みのため次の実行は起動しない"
+          elif [ "$(TZ=Asia/Tokyo date +%Y%m%d)" -le "$DATE_TO" ]; then
             gh workflow run check.yml --ref main --repo "$GITHUB_REPOSITORY"
           fi
