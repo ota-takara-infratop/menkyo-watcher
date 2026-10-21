@@ -5,8 +5,8 @@ AUTO_BOOK=1 のときは、予約がなければ最も早い空き枠を自動�
 
 環境変数:
   NTFY_TOPIC  通知先の ntfy トピック名（必須。未設定なら通知せず結果を表示するだけ）
-  DATE_FROM   監視開始日 YYYYMMDD（既定: 20261015）
-  DATE_TO     監視終了日 YYYYMMDD（既定: 20261031）
+  DATE_FROM   監視開始日 YYYYMMDD（既定: 20261106）
+  DATE_TO     監視終了日 YYYYMMDD（既定: 20261127）
   PLACES      監視する試験場コード カンマ区切り（既定: 280 = 鮫洲。270 = 府中）
   LOOP_MINUTES      この分数のあいだ繰り返し確認する（既定: 0 = 1回だけ）
   INTERVAL_SECONDS  繰り返し時の確認間隔 秒（既定: 60）
@@ -42,7 +42,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 STATE_FILE = os.path.join(HERE, "state.json")
 RESERVATION_FILE = os.path.join(HERE, "reservation.enc")  # 現在の予約（STATE_KEY で暗号化）。無ければ予約なし
 SWITCH_MARKER_FILE = os.path.join(HERE, "switch_in_progress.json")  # 乗り換えの途中で作る目印（番号は入れない）。残っていたら自動予約を止める
-SWITCH_SKIP_FILE = os.path.join(HERE, "switch_skip.json")  # 乗り換え先が満席で取れなかった枠のキー一覧。空きが消えるまで乗り換え先にしない
+SWITCH_SKIP_FILE = os.path.join(HERE, "switch_skip.json")  # 予約・乗り換え先として取れなかった枠のキー一覧。空きが消えるまで対象にしない
 AUTOBOOK_STOPPED_FILE = os.path.join(HERE, "autobook_stopped.json")  # 想定外のエラーで自動予約を止めたら作る
 JST = timezone(timedelta(hours=9))
 HEADERS = {
@@ -78,7 +78,7 @@ def fetch(month, place):
     with urllib.request.urlopen(req, timeout=60) as res:
         data = json.load(res)
     if data.get("code") != "A0001":
-        raise RuntimeError(f"unexpected response code: {data.get('code')}")
+        raise RuntimeError(f"unexpected response code: {safe_code(data.get('code'))}")
     return data["body"]
 
 
@@ -181,7 +181,7 @@ def put_reservation(v):
     data = post_json(PUT_API, payload)
     if data.get("_http", 0) >= 500:
         return f"HTTP{data['_http']}"  # サーバーエラーは本文に関係なく結果不明
-    if data.get("status") == "OK":
+    if data.get("status") == "OK" and not data.get("_http"):  # HTTP エラーは本文が OK でも成功にしない
         return data
     return str(data.get("code") or data.get("status") or "unknown")
 
@@ -263,8 +263,12 @@ def save_reservation(slot_info, result):
     except Exception:
         print("警告: 予約内容の暗号化に失敗したため保存しません")
         return False
-    with open(RESERVATION_FILE, "w", encoding="utf-8") as f:
-        f.write(enc)
+    try:
+        with open(RESERVATION_FILE, "w", encoding="utf-8") as f:
+            f.write(enc)
+    except OSError:
+        print("警告: 予約内容のファイル書き込みに失敗しました")
+        return False
     return True
 
 
@@ -275,10 +279,18 @@ def delete_reservation():
         pass
 
 
+SAFE_CODE = re.compile(r"^(?:[A-Z]{1,4}\d{3,4}|HTTP\d{3}|HTTP5xx|EXCEPTION|UNKNOWN|unknown|DECRYPT|INTERRUPTED|SAVE|SAVE_FAILED)$")
+
+
+def safe_code(code):
+    """公開ログ・公開ファイルに出してよい形のコードだけ返す（サーバーが返した文字列をそのまま出さない）"""
+    return code if isinstance(code, str) and SAFE_CODE.fullmatch(code) else "OTHER"
+
+
 def stop_autobook(code, lines, title="仮免許の自動予約が止まりました", priority=4):
     # 先に状態ファイルを書いてから通知する（通知が失敗しても止まった状態は残す）
-    write_json(AUTOBOOK_STOPPED_FILE, {"code": code, "at": datetime.now(JST).isoformat()})
-    print(f"自動予約: エラー {code} のため自動予約を停止")
+    write_json(AUTOBOOK_STOPPED_FILE, {"code": safe_code(code), "at": datetime.now(JST).isoformat()})
+    print(f"自動予約: エラー {safe_code(code)} のため自動予約を停止")
     notify(lines, title=title, priority=priority)
 
 
@@ -379,7 +391,7 @@ def book_new(key, v):
         return
 
     # 満席（他の人に先に取られた）・予約できない日。この枠は空きが消えるまで狙わず、次の確認で別の枠を試す
-    print(f"自動予約: 予約できず（{result}） {v['slot']}")
+    print(f"自動予約: 予約できず（{safe_code(result)}） {v['slot']}")
     skip_target(key)
 
 
@@ -418,13 +430,14 @@ def _do_switch(cur, v, key, old_slot):
         print(f"ERROR: cancel {type(e).__name__}")
         code = "EXCEPTION"
     if code != "A1301":
-        if re.fullmatch(r"[A-Z]\d{4}", code):  # サーバーが返した確定のエラーコード: 取り消されていない
-            line = f"今の予約はそのまま残っています（{old_slot}）。念のため「予約状況確認/キャンセル」で確認してください"
-        else:  # 例外・HTTPエラー・読めない応答: 取り消されたかどうか分からない
-            line = f"取り消しの結果が不明です。予約状況確認/キャンセルで確認してください（{old_slot}）"
+        # A1301 以外は、取り消されたかどうかを断定しない（reservation.enc は残す）
         stop_autobook(
             code,
-            [f"取り消しがエラー（{code}）で失敗したので、新しい枠は予約していません", line, "空き通知は続けます"],
+            [
+                f"取り消しがエラー（{code}）で終わったので、新しい枠は予約していません",
+                f"取り消されたか分かりません。予約状況確認/キャンセルで確かめてください（{old_slot}）",
+                "空き通知は続けます",
+            ],
             title="仮免許の自動乗り換えが止まりました",
         )
         return
@@ -454,7 +467,7 @@ def _do_switch(cur, v, key, old_slot):
         )
         return
 
-    print(f"自動予約: 乗り換え先の予約に失敗（{result}） {v['slot']}、元の枠を取り直します")
+    print(f"自動予約: 乗り換え先の予約に失敗（{safe_code(result)}） {v['slot']}、元の枠を取り直します")
     skip_target(key)
     old = {"date": cur["date"], "starttime": cur["starttime"], "endtime": cur["endtime"], "place": cur["place"], "slot": old_slot}
     back = safe_put(old)
@@ -481,7 +494,7 @@ def _do_switch(cur, v, key, old_slot):
 
     # 元の枠も満席などで取り直せなかった（確定の失敗）: 予約なしの状態。自動予約は続ける
     delete_reservation()
-    print(f"自動予約: 元の枠も取り直せませんでした（{back}）。予約なしの状態")
+    print(f"自動予約: 元の枠も取り直せませんでした（{safe_code(back)}）。予約なしの状態")
     notify(
         [
             f"乗り換えに失敗し、元の枠（{old_slot}）も取り直せませんでした（{back}）",

@@ -436,28 +436,46 @@ class TestSwitch(Base):
         self.assertFalse(os.path.exists(self.stopped))
         self.assertEqual(self.skip_json(), ["280-20261109-0800"])
 
-    def test_cancel_exception_says_unknown(self):
-        self.queue(check.CUSTOMER_API, {"code": "A1201"})
-        self.queue(check.CANCEL_API, OSError("timeout"))
+    def test_cancel_non_success_uses_unified_wording(self):
+        cases = [OSError("timeout"), {"code": "HTTP404", "_http": 404}, {"code": "B1234"}, {"code": "A1302"},
+                 {"code": "A1301", "_http": 503}]
+        for resp in cases:
+            with self.subTest(resp=repr(resp)):
+                for f in (self.stopped, self.marker):
+                    if os.path.exists(f):
+                        os.remove(f)
+                self.notices.clear()
+                self.calls.clear()
+                self.queue(check.CUSTOMER_API, {"code": "A1201"})
+                self.queue(check.CANCEL_API, resp)
+                self.run_quiet({"a": vac("20261109")})
+                text = "".join(self.notices[0][1])
+                self.assertIn("取り消されたか分かりません。予約状況確認/キャンセルで確かめてください", text)
+                self.assertNotIn("そのまま残っています", text)
+                self.assertEqual(self.urls(), ["customerops", "cancel"])  # 新しい枠は予約しない
+                self.assertTrue(os.path.exists(self.stopped))
+                self.assertEqual(self.read_reservation()["res_no"], "RES-OLD-111")
+
+    def test_precheck_a1202_stops(self):
+        self.queue(check.CUSTOMER_API, {"code": "A1202"})
         self.run_quiet({"a": vac("20261109")})
-        text = "".join(self.notices[0][1])
-        self.assertIn("取り消しの結果が不明です。予約状況確認/キャンセルで確認してください", text)
-        self.assertNotIn("そのまま残っています", text)
+        self.assertEqual(self.urls(), ["customerops"])
+        self.assertTrue(os.path.exists(self.stopped))
         self.assertEqual(self.read_reservation()["res_no"], "RES-OLD-111")
 
-    def test_cancel_http_error_says_unknown(self):
-        self.queue(check.CUSTOMER_API, {"code": "A1201"})
-        self.queue(check.CANCEL_API, {"code": "HTTP404", "_http": 404})
-        self.run_quiet({"a": vac("20261109")})
-        self.assertIn("取り消しの結果が不明です", "".join(self.notices[0][1]))
+    def test_b4001_is_confirmed_failure_on_new_slot(self):
+        self.switch_queues({"status": "NG", "code": "B4001"}, ok("RES-BACK-555", "REC-BACK-666"))
+        self.run_quiet(vs(vac("20261109")))
+        self.assertFalse(os.path.exists(self.stopped))
+        self.assertEqual(self.read_reservation()["res_no"], "RES-BACK-555")
+        self.assertEqual(self.skip_json(), ["280-20261109-0800"])
 
-    def test_cancel_definite_code_says_still_held(self):
-        self.queue(check.CUSTOMER_API, {"code": "A1201"})
-        self.queue(check.CANCEL_API, {"code": "B1234"})
+    def test_switch_new_slot_ok_with_http_error_is_not_success(self):
+        self.switch_queues({"status": "OK", "code": "HTTP400", "_http": 400, "res_no": "RES-NEW-333"})
         self.run_quiet({"a": vac("20261109")})
-        text = "".join(self.notices[0][1])
-        self.assertIn("今の予約はそのまま残っています", text)
-        self.assertNotIn("取り消しの結果が不明です", text)
+        self.assertEqual(self.urls(), ["customerops", "cancel", "putres"])
+        self.assertTrue(os.path.exists(self.stopped))
+        self.assertFalse(os.path.exists(self.resv))
 
     def test_switch_target_lead_time(self):
         self.run_quiet({"a": vac("20261105"), "b": vac("20261107")})
@@ -624,6 +642,51 @@ class TestMisc(Base):
     def test_put_reservation_5xx_ignores_body_code(self):
         with mock.patch.object(check, "post_json", lambda u, p: {"code": "B4002", "_http": 503}):
             self.assertEqual(check.put_reservation(vac("20261108")), "HTTP503")
+
+    def test_customer_op_5xx_ignores_body_code(self):
+        with mock.patch.object(check, "post_json", lambda u, p: {"code": "A1301", "_http": 503}):
+            self.assertEqual(check.customer_op(check.CANCEL_API, "R", "3"), "HTTP503")
+
+    def test_put_reservation_http_error_with_ok_body_is_not_success(self):
+        with mock.patch.object(check, "post_json", lambda u, p: {"status": "OK", "code": "HTTP400", "_http": 400}):
+            self.assertEqual(check.put_reservation(vac("20261108")), "HTTP400")
+
+    def test_b4001_is_confirmed_failure_on_new_booking(self):
+        self.queue(check.PUT_API, {"status": "NG", "code": "B4001"})
+        self.run_quiet(vs(vac("20261108")))
+        self.assertFalse(os.path.exists(self.stopped))
+        self.assertEqual(self.skip_json(), ["280-20261108-0800"])
+
+    def test_server_code_is_sanitized_in_logs_and_stop_file(self):
+        weird = "zz 09012345678 RES-OLD-111"  # サーバーが想定外の文字列を返した場合
+        self.put_reservation_file("20261120")
+        self.queue(check.CUSTOMER_API, {"code": weird})
+        text = self.run_quiet({"a": vac("20261109")})  # 出力に機密が出ないことは run_quiet が検査
+        self.assertIn("OTHER", text)
+        self.assertEqual(self.stopped_json()["code"], "OTHER")
+        self.assertIn(weird, "".join(self.notices[0][1]))  # 通知には生のコードを残す
+        self.assertEqual(check.safe_code("B4002"), "B4002")
+        self.assertEqual(check.safe_code("HTTP504"), "HTTP504")
+        self.assertEqual(check.safe_code("UNKNOWN"), "UNKNOWN")
+        self.assertEqual(check.safe_code("a b"), "OTHER")
+
+    def test_save_write_failure_stops_new_booking(self):
+        real_open = open
+
+        def failing_open(path, mode="r", *a, **kw):
+            if path == self.resv and "w" in mode:
+                raise PermissionError("denied")
+            return real_open(path, mode, *a, **kw)
+
+        self.queue(check.PUT_API, ok("RES-NEW-333", "REC-NEW-444"))
+        with mock.patch("builtins.open", failing_open):
+            self.assertFalse(check.save_reservation(vac("20261108"), ok("R", "C")))
+            self.run_quiet(vs(vac("20261108")))
+        self.assertFalse(os.path.exists(self.resv))
+        self.assertTrue(os.path.exists(self.stopped))
+        title, lines, prio = self.notices[0]
+        self.assertEqual(prio, 5)
+        self.assertIn("RES-NEW-333", "".join(lines))
 
     def test_notify_failure_does_not_skip_booking(self):
         self.queue(check.PUT_API, ok("RES-NEW-333", "REC-NEW-444"))
