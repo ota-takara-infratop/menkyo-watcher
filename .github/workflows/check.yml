@@ -3,6 +3,8 @@ name: check-vacancy
 # 1回の実行で約5時間40分、1分ごとに確認し続ける。
 # 終了時に次の実行を自分で起動するので途切れない（GitHub の cron は数時間おきにしか動かないことがあるため、cron は保険）。
 # 監視終了日（DATE_TO）を過ぎたら次の実行は起動しない。
+# 自動予約（AUTO_BOOK）は予約後も監視を続け、より早い日に空きが出たら乗り換える。
+# 現在の予約は STATE_KEY で暗号化した reservation.enc としてリポジトリに保存する。
 on:
   schedule:
     - cron: "*/30 * * * *"
@@ -20,6 +22,9 @@ jobs:
   check:
     runs-on: ubuntu-latest
     timeout-minutes: 355
+    env:
+      DATE_FROM: "20261106"  # 監視期間（両方のステップで共通）
+      DATE_TO: "20261127"
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -28,8 +33,6 @@ jobs:
       - name: Check vacancy
         env:
           NTFY_TOPIC: ${{ secrets.NTFY_TOPIC }}
-          DATE_FROM: "20261015"
-          DATE_TO: "20261031"
           PLACES: "280"  # 280=鮫洲, 270=府中
           LOOP_MINUTES: "340"
           INTERVAL_SECONDS: "60"
@@ -37,13 +40,16 @@ jobs:
           BOOK_NAME: ${{ secrets.BOOK_NAME }}
           BOOK_BIRTHDAY: ${{ secrets.BOOK_BIRTHDAY }}
           BOOK_PHONE: ${{ secrets.BOOK_PHONE }}
+          STATE_KEY: ${{ secrets.STATE_KEY }}
+          MIN_LEAD_DAYS: "7"  # 自動予約・乗り換えは今日からこの日数以上先の枠だけ
         run: python -u check.py
       - name: Save state
         if: always()
         run: |
-          [ -f state.json ] || exit 0
-          git add state.json
-          for f in booked.json autobook_stopped.json; do if [ -f "$f" ]; then git add "$f"; fi; done
+          for f in state.json reservation.enc autobook_stopped.json switch_in_progress.json switch_skip.json; do
+            # 存在するか、追跡中のもの（削除も記録する）だけ add する
+            if [ -e "$f" ] || git ls-files --error-unmatch "$f" >/dev/null 2>&1; then git add -A -- "$f"; fi
+          done
           if ! git diff --cached --quiet; then
             git config user.name "github-actions[bot]"
             git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
@@ -55,10 +61,7 @@ jobs:
         if: success() || failure()
         env:
           GH_TOKEN: ${{ github.token }}
-          DATE_TO: "20261031"
         run: |
-          if [ -f booked.json ]; then
-            echo "予約済みのため次の実行は起動しない"
-          elif [ "$(TZ=Asia/Tokyo date +%Y%m%d)" -le "$DATE_TO" ]; then
+          if [ "$(TZ=Asia/Tokyo date +%Y%m%d)" -le "$DATE_TO" ]; then
             gh workflow run check.yml --ref main --repo "$GITHUB_REPOSITORY"
           fi
